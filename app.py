@@ -1,5 +1,6 @@
 import pickle
 import importlib
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -7,14 +8,15 @@ import numpy as np
 import streamlit as st
 
 
-MODEL_PATH = Path("lstm_model.h5")
-TOKENIZER_PATH = Path("tokenizer.pkl")
-MAX_LEN_PATH = Path("max_len.pkl")
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "lstm_model.h5"
+TOKENIZER_PATH = BASE_DIR / "tokenizer.pkl"
+MAX_LEN_PATH = BASE_DIR / "max_len.pkl"
 
 
 st.set_page_config(
     page_title="Next Word Prediction using LSTM",
-    page_icon="assets/icon.png" if Path("assets/icon.png").exists() else None,
+    page_icon=str(BASE_DIR / "assets" / "icon.png") if (BASE_DIR / "assets" / "icon.png").exists() else None,
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -364,6 +366,22 @@ def apply_styles() -> None:
     )
 
 
+def preflight_checks() -> List[str]:
+    """Run fast startup checks so deployment failures are visible immediately."""
+    errors: List[str] = []
+
+    for path in [MODEL_PATH, TOKENIZER_PATH, MAX_LEN_PATH]:
+        if not path.exists():
+            errors.append(f"Missing file: {path.name}")
+
+    try:
+        importlib.import_module("tensorflow")
+    except Exception as exc:
+        errors.append(f"TensorFlow not available: {exc}")
+
+    return errors
+
+
 @st.cache_resource(show_spinner=False)
 def load_resources() -> Tuple[
     Optional[object],
@@ -544,6 +562,24 @@ def main() -> None:
         if "prediction_cache" not in st.session_state:
             st.session_state["prediction_cache"] = {}
 
+        startup_errors = preflight_checks()
+        if startup_errors:
+            st.error("Startup checks failed in deployment environment.")
+            for err in startup_errors:
+                st.write(f"- {err}")
+            st.info("Expected files: lstm_model.h5, tokenizer.pkl, max_len.pkl")
+            return
+
+        if os.getenv("PRELOAD_MODEL", "0") == "1" and "model_preloaded" not in st.session_state:
+            with st.spinner("Preloading model for faster first prediction..."):
+                _, _, _, _, _, _, preload_errors = load_resources()
+            if preload_errors:
+                st.error("Model preload failed.")
+                for err in preload_errors:
+                    st.write(f"- {err}")
+                return
+            st.session_state["model_preloaded"] = True
+
         st.markdown(
             """
             <div class="section-label">
@@ -600,7 +636,7 @@ def main() -> None:
                         model, tokenizer, max_len, pad_fn, predict_fn, model_input_len, load_errors = load_resources()
 
                         if load_errors:
-                            st.error("Required model files are missing or invalid.")
+                            st.error("Model resources could not be loaded.")
                             st.info("Expected files: lstm_model.h5, tokenizer.pkl, max_len.pkl")
                             for err in load_errors:
                                 st.write(f"- {err}")
